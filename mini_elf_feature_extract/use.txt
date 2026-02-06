@@ -1,0 +1,16 @@
+python3 controller.py \
+  --input /home/workspace/CWE121_signal_cases/bad/ \
+  --output ./features_121.json \
+  --ida32 /home/workspace/ida-pro-9.1/ida \
+  --ida_scripts ./ida_scripts \
+  --recursive \
+  --threads 8
+
+python3 sampler.py features_121.json selected_121.json --no-bits-stratify -k 100
+
+python3 copy_samples.py \
+    ./selected_121.json \
+    /home/workspace/CWE121_signal_cases \
+    --out-dir /home/workspace/CWE121_signal_subsamples
+
+    

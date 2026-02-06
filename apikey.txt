@@ -1,0 +1,2 @@
+CHATANYWHERE_BASE = "https://api.chatanywhere.tech/v1"
+CHATANYWHERE_KEY = "sk-XvaXxUFA37SYujCAFA1vpNz3mnXpjdbTI6aMZobcZbrTjvOu"
