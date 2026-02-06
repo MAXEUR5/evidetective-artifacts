@@ -1,8 +1,8 @@
-# EviDetective Artifacts
+# Artifact for “EVIDETECTIVE: Evidence-Driven Binary Vulnerability Discovery”
 
-This repository will host the artifacts for the binary vulnerability discovery framework **EviDetective**.
+This repository contains the artifact corresponding to the paper:
 
-The repository is currently under preparation for artifact evaluation.  
-More detailed documentation, scripts, and instructions for reproducing the experiments will be added before the submission deadline.
+> **EVIDETECTIVE: Evidence-Driven Binary Vulnerability Discovery**  
+> (anonymous submission – do not add author names or affiliations here)
 
-For now, the layout and content are subject to change.
+The artifact implements the evidence-driven workflow described in the paper: for each chain-centric lead, the system maintains an explicit proof state over four proof obligations (O1–O4) and incrementally gathers program-derived evidence to verify or refute vulnerability claims.
