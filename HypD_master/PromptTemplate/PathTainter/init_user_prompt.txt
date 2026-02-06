@@ -1,0 +1,11 @@
+[CALL CHAIN]
+$map{{call_list_str}}
+
+[SOURCE]
+$map{{source_func}}
+
+[SINK]
+$map{{sink_func}}
+
+[DECOMPILED PSEUDOCODE]
+$map{{pcode_list_str}}

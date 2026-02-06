@@ -1,0 +1,5 @@
+[API IMPORT TABLE]
+$map{{api_list_str}}
+
+[VULNERABILITY TYPE]
+$map{{vuln_type}}

@@ -1,0 +1,2 @@
+$block{{ for _name in func_name }}[CALL FUNCTION NAME] $map{{ _name }}, [CALL FUNCTION TYPE] $map{{ func_type[loop.index0] }}, [DEMANGLE NAME] $map{{ demangle_name[loop.index0] }}
+$block{{ endfor }}

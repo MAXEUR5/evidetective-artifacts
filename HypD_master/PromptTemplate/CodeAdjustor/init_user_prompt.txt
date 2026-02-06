@@ -1,0 +1,5 @@
+[PYTHON POC CODE]
+$map{{poc_code}}
+
+[TARGET BINARY PATH]
+$map{{bin_path}}

@@ -1,0 +1,14 @@
+[VARIABLE SIZE]
+$map{{lvar_size}}
+
+[OFFSET TO SAVED RETURN ADDRESS]
+$map{{dist_to_ret}}
+
+[OFFSET TO SP REGISTER]
+$map{{offset_to_sp}}
+
+[VARIABLE TYPE]
+$map{{lvar_type}}
+
+[STORAGE ALLOCATION]
+$map{{reg_or_stack}}

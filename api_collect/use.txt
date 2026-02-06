@@ -1,0 +1,6 @@
+python3 ida_import_api_collect.py \
+    /home/workspace/CWE121_signal_cases/ \
+    --ida /home/workspace/ida-pro-9.1/ida \
+    --script ./imp_api_dump.py \
+    --out ./CWE121_signal_cases_import_api_set.json \
+    --workers 4

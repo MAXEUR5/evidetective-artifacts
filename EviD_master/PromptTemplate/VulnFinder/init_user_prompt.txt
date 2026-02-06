@@ -1,0 +1,17 @@
+[CALL CHAIN]
+$map{{call_list_str}}
+
+[SOURCE API]
+$map{{source_func}}
+
+[SINK API]
+$map{{sink_func}}
+
+[DECOMPILED PSEUDOCODE]
+$map{{pcode_list_str}}
+
+[TAINT REPORT]
+$map{{taint_report}}
+
+[VULNERABILITY TYPE]
+$map{{vuln_type}}

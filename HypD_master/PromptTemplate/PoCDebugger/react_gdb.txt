@@ -1,0 +1,3 @@
+[GDB INTERACTION LOG]
+$block{{ for _cmd in gdb_command }}[GDB COMMAND] $map{{ _cmd }}, [GDB RESPONSE] $map{{ gdb_resp[loop.index0] }}
+$block{{ endfor }}

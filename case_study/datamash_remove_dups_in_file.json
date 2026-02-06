@@ -1,0 +1,285 @@
+{
+  "bin_path": "/home/workspace/tp/bin/datamash",
+  "program": "datamash",
+  "static_sinks": [
+    [
+      "remove_dups_in_file",
+      "memcpy"
+    ]
+  ],
+  "vuln_count": 1,
+  "status_record": [
+    {
+      "llm_reason": [
+        "Need the decompilation of line_record_fread to see how it parses input_stream into line_record_t fields, in particular whether any maximum field length, truncation, or sanitization is applied before the field length len is stored and later returned via line_record_get_field_0 to remove_dups_in_file for use as the memcpy length. This is required to assess if attacker-controlled or unbounded data can reach the heap-allocated keys_buffer and potentially exceed its allocation, and to check for any effective sanitization.",
+        "Obtain precise stack-frame information for the local variable keys_buffer in remove_dups_in_file to confirm it is a heap pointer (not an inlined stack buffer), verify there is no stack object underlying the memcpy destination, and solidify the object-identity and boundary model for the heap buffer that is overflowed by memcpy. This is required to satisfy semantic-fidelity and object-boundary obligations for the suspected heap-based overflow.",
+        "Based on the stack frame info for keys_buffer, we can confirm it is a stack-resident pointer variable whose pointee is heap-allocated via xmalloc, which is sufficient to fix the object identity of the memcpy destination as a heap buffer and satisfy the semantic-fidelity/object-boundary obligation (O4) using evidence from query 3. Next, we need static-analysis information about the global variable rmdup_initial_size to see its initial value and properties, since this global determines keys_buffer_alloc (the heap allocation size) and thus directly influences whether the memcpy length len from input can exceed the allocation and cause a heap overflow. This global-var query will support analysis of payload influence (O2) and absence of sanitization (O3).",
+        "Need the decompilation of function line_record_parse_fields to understand how it computes each field buffer pointer and length stored in lr->fields and whether it enforces any maximum field length, truncation, or validation relative to linebuffer size or other limits before these values are exposed via line_record_get_field_0 and used as the length argument len in memcpy within remove_dups_in_file. This is necessary to confirm that attacker controlled line input can produce arbitrarily large len that exceeds keys_buffer_alloc derived from rmdup_initial_size and that there is no effective sanitization, while also marking the remove_dups_in_file sink as reachable from main along the specified call chain.",
+        "Need the decompilation of readlinebuffer_delim, which is the function that actually reads from the FILE stream into lr->lbuf before line_record_parse_fields computes field lengths. This will confirm whether there is any fixed upper bound, truncation, or other limiting behavior on lbuf->length (and thus on field lengths len) relative to rmdup_initial_size, and therefore whether an attacker can produce a field len greater than keys_buffer_alloc so that memcpy in remove_dups_in_file writes past the end of the heap allocation.",
+        "Using the previously obtained decompilations of line_record_get_field_0, line_record_fread, line_record_parse_fields, readlinebuffer_delim, and the global rmdup_initial_size, we can now see that the memcpy length len in remove_dups_in_file is derived directly from the length of an input field parsed from an unbounded linebuffer that is grown via xpalloc with no fixed cap, while the destination heap buffer keys_buffer has a fixed size keys_buffer_alloc equal to rmdup_initial_size and is never increased when len exceeds it. When keys_buffer_alloc < len + next_key_pos + 1, the code wrongly reallocates a new buffer of the same size and resets next_key_pos to 0, then immediately performs memcpy(keys_buffer + next_key_pos, str, len) with len potentially greater than keys_buffer_alloc, ensuring a heap write beyond the allocation. Thus the sink memcpy is clearly influenced by a potentially harmful payload (an arbitrarily long field in the input stream) and obligation O2 is satisfied. To further solidify the call-graph understanding and ensure there are no unexpected internal calls around the sink, we now request internal-call information for remove_dups_in_file.",
+        "To fully confirm that a line_record_t field length len can exceed the fixed heap allocation keys_buffer_alloc (derived from rmdup_initial_size) and thus trigger a heap-based overflow in memcpy, we must understand xpalloc, which is used by readlinebuffer_delim to grow lr->lbuf. Fetching xpallocs decompilation will show whether there is any meaningful maximum cap or truncation on the linebuffer size when called as xpalloc(buffer, &linebuffer->size, 1, -1, 1). This is needed to eliminate uncertainty about upper bounds on len and to reinforce the conclusion that the memcpy length can be made arbitrarily larger than keys_buffer_alloc.",
+        "Vulnerability analysis summary for CWE 122 heap based buffer overflow on the path main to remove_dups_in_file with sink memcpy.\n\n1. Reachability of the sink (O1)\nIn main, after option parsing and setup, the program parses the operation specification into dm_0. It then switches on dm_0->mode. In the case processing_mode::MODE_REMOVE_DUPS, it calls remove_dups_in_file with no further guards, and this mode is selected based on normal command line arguments. Therefore, under plausible user supplied arguments, remove_dups_in_file is executed. Within remove_dups_in_file, the problematic memcpy is in the main processing loop that handles each input line; it is executed whenever line_record_get_field_0 succeeds for the configured key column. Because input_stream is opened from standard input or files and line_record_fread loops until EOF, the path from main to the memcpy in remove_dups_in_file is straightforward and reachable.\n\n2. Data flow from input to memcpy and heap object model (O2 and O4)\nremove_dups_in_file constructs a deduplication table of key strings:\n\n  init_table_size = rmdup_initial_size\n  keys_buffer_alloc = rmdup_initial_size\n  keys_buffer = xmalloc(rmdup_initial_size)\n  buffer_list = x2nrealloc(0, and buffer_list[0] = keys_buffer, buffer_list_size = 1\n\nStack layout analysis (stack_lvar for keys_buffer) shows keys_buffer is a stack local of type char pointer, size 8, stored on the stack, pointing to dynamically allocated heap memory returned by xmalloc. There is no evidence of in place or alloca allocations; the pointed to object is a heap buffer whose size is keys_buffer_alloc. The global rmdup_initial_size is of type size_t, initial value 1048576, and main option 139 can even reduce it to 1024, but in all cases it is a fixed upper bound for the allocation size used in remove_dups_in_file.\n\nFor each input record in the main processing loop of remove_dups_in_file:\n\n  while ( line_record_fread(thisline, input_stream, eolchar[0], skip_comments, 0) ) {\n    line_record_get_field_0(thisline, key_col, &str, &len)\n    if (!success) error_not_enough_fields\n    if ( keys_buffer_alloc < len + next_key_pos + 1 ) {\n      keys_buffer = xmalloc(keys_buffer_alloc)\n      next_key_pos = 0\n      possibly grow buffer_list via x2nrealloc\n      buffer_list[buffer_list_size++] = keys_buffer\n    }\n    next_key = &keys_buffer[next_key_pos]\n    memcpy(&keys_buffer[next_key_pos], str, len)\n    next_key[len] = 0\n    hash_insert_if_absent and possibly print line\n  }\n\nThus the memcpy destination is keys_buffer plus next_key_pos, and the copy length is len as returned by line_record_get_field_0. The terminator write next_key[len] also uses len. Because keys_buffer points to a heap allocation of size keys_buffer_alloc and keys_buffer_alloc is not updated when the code decides more space is needed, any execution satisfying keys_buffer_alloc < len + next_key_pos + 1 leads to a write that extends beyond the allocated object boundary. This establishes the heap object identity (heap, not stack) and the out of bounds write at the sink (O4). The memcpy parameters, particularly len, are directly influenced by input, as detailed next (O2).\n\n3. Construction of len from external input and lack of size constraints (O2)\nInput reading and field parsing proceed as follows:\n\n  line_record_fread(lr, stream, delimiter, skip_comments, vnlog_prologue)\n\nInside line_record_fread, the function readlinebuffer_delim is invoked repeatedly to fill lr->lbuf from the FILE stream up to the delimiter or EOF. readlinebuffer_delim behaves as:\n\n  buffer = linebuffer->buffer\n  p = buffer\n  end = buffer + linebuffer->size\n  while ( true ) {\n    c = getc_unlocked(stream)\n    if ( c == EOF ) break\n    if ( p == end ) {\n      oldsize = linebuffer->size\n      buffer = xpalloc(buffer, &linebuffer->size, 1, -1, 1)\n      p = buffer + oldsize\n      linebuffer->buffer = buffer\n      end = buffer + linebuffer->size\n    }\n    *p++ = c\n    if ( c == delimiter ) break\n  }\n  possibly force a delimiter at end of buffer\n  linebuffer->length = p - buffer\n\nThe xpalloc call uses n_max = -1 and s = 1, so there is effectively no upper bound on linebuffer->size other than theoretical limits; xpalloc grows n (the element count) by a factor of 1.5, then ensures at least n_incr_min additional elements, and calls xrealloc. There is no truncation of input lines. Therefore, a user can supply arbitrarily long lines, and linebuffer->length reflects the full line length up to the delimiter.\n\nline_record_fread then performs some vnlog specific handling when vnlog is enabled, potentially skipping comment lines and extracting an inner prologue line; otherwise it calls\n\n  line_record_parse_fields(&lr->lbuf, lr, in_tab, ignore_trailing_comments_flag, vnlog_flag)\n\nline_record_parse_fields splits the linebuffer into fields:\n\n  buflen = lbuf->length\n  fptr = lbuf->buffer\n\nFor the whitespace delimited case (field_delim == 128), it advances over blanks, records field_beg_0, and counts flen until the next blank or comment marker. It then reserves space for a field and stores:\n\n  lr->fields[num_fields].buf = field_beg_0\n  lr->fields[num_fields].len = flen\n\nFor the explicit delimiter case, it uses field_delim to separate fields but again stores\n\n  lr->fields[num_fields].buf = field_beg\n  lr->fields[num_fields].len = fptr - field_beg\n\nIn both branches there is no cap on flen beyond the linebuffer length; if a single field occupies almost the entire line, len can be very large, limited only by the amount of data xpalloc allowed to be read.\n\nline_record_get_field_0 simply performs:\n\n  assert n != 0\n  if ( n > line_record_num_fields_0(lr) ) return 0\n  *pptr = lr->fields[n - 1].buf\n  *plen = lr->fields[n - 1].len\n\nThus len at the memcpy site in remove_dups_in_file equals the field length recorded for the chosen key column, which is ultimately bounded only by the length of the input line. Because readlinebuffer_delim and xpalloc do not enforce a small maximum line length and line_record_parse_fields does not truncate or otherwise constrain field lengths, an attacker can select a field whose length len is arbitrarily large relative to keys_buffer_alloc. For example, with default rmdup_initial_size 1048576, sending a line where the key column field is larger than one megabyte ensures len > keys_buffer_alloc once next_key_pos is 0. As the program processes more unique keys and increments next_key_pos by len + 1 for each new one, it is also straightforward to satisfy keys_buffer_alloc < len + next_key_pos + 1 even for moderately sized fields.\n\nThis shows the memcpy length parameter is directly and strongly influenced by external input and can be chosen so that len exceeds the size of the heap buffer keys_buffer, satisfying the payload influence requirement (O2).\n\n4. Absence of effective sanitization or bounds checks (O3)\nAlong the full path from input to sink, there are several operations on the data but none limit its size relative to the heap allocation used by remove_dups_in_file:\n\n  readlinebuffer_delim reads characters until the delimiter, extending the buffer with xpalloc and no maximum; it only guards against arithmetic overflow when computing new sizes.\n  line_record_parse_fields computes field lengths as simple differences of pointers or counters (flen, fptr - field_beg) without any maximum limit or truncation.\n  line_record_get_field_0 only checks that the requested field index is in range; it does not validate len.\n  In remove_dups_in_file, the only check involving len is\n\n      if ( keys_buffer_alloc < len + next_key_pos + 1 ) {\n        keys_buffer = xmalloc(keys_buffer_alloc)\n        next_key_pos = 0\n        possibly extend buffer_list\n        buffer_list[v1] = keys_buffer\n      }\n\n  Critically, this check is intended to ensure enough room, but it is incorrect: it allocates a new buffer of the same size keys_buffer_alloc instead of increasing keys_buffer_alloc or the allocation size. After this branch, the code unconditionally executes\n\n      memcpy(&keys_buffer[next_key_pos], str, len)\n      next_key[len] = 0\n\n  Because the branch was taken exactly when len + next_key_pos + 1 exceeds keys_buffer_alloc, the memcpy and the terminator write always overrun the new buffer. There is no additional comparison between len and keys_buffer_alloc, no truncation of len, and no guard around the memcpy itself.\n\nThe global rmdup_initial_size can be left at its large default or reduced by a command line option, but it is never dynamically increased within remove_dups_in_file in response to the detected lack of space. buffer_list and its sizing logic via x2nrealloc only affect the auxiliary array of pointers to keys_buffer blocks; they do not mitigate the overflow into each block. The hash table insertion and later freeing of buffers also do not perform any length checks related to keys_buffer.\n\nTherefore, there is no sanitization, validation, or bounds enforcement that neutralizes an oversized field length. On the contrary, the condition that detects insufficient capacity immediately precedes the buggy reallocation and then the out of bounds memcpy. This satisfies the requirement that there is no effective sanitization on the path (O3).\n\n5. Root cause and exploitability\nThe root cause of the vulnerability is a flawed growth strategy for the heap buffer keys_buffer in remove_dups_in_file. The code checks whether the needed space len + next_key_pos + 1 exceeds keys_buffer_alloc, but instead of increasing keys_buffer_alloc and reallocating to a larger buffer, it allocates a new buffer of the same size keys_buffer_alloc and resets next_key_pos to zero. This guarantees that whenever the condition is true, the subsequent memcpy and terminator write will overflow the newly allocated heap buffer.\n\nBecause the input line length and field length are controlled by external input and are unbounded in practice, an attacker can craft input records that trigger the condition keys_buffer_alloc < len + next_key_pos + 1, and then force len to be large enough to overwrite adjacent heap metadata or neighboring heap objects following the keys_buffer allocation. This is a genuine heap based buffer overflow in the sense required: it writes beyond the end of a heap allocated buffer, with potentially severe consequences such as crashes, corruption of hash table entries, corruption of buffer_list pointers, or manipulation of allocator metadata.\n\nAll obligations are thus satisfied: the path to the memcpy sink is reachable from main under normal operation modes (O1), the sink parameters are directly influenced by attacker controlled input and can be chosen to violate object bounds (O2), there is no effective sanitization or bounding logic preventing oversized lengths from reaching memcpy (O3), and the nature and boundaries of the heap object into which memcpy writes have been confirmed using stack and global analysis, with instruction level behavior of xpalloc and readlinebuffer_delim validating the unbounded nature of len (O4)."
+      ],
+      "llm_obligations_status": [
+        {
+          "O1": "Unknown",
+          "O2": "Unknown",
+          "O3": "Unknown",
+          "O4": "Unknown"
+        },
+        {
+          "O1": "Unknown",
+          "O2": "Unknown",
+          "O3": "Unknown",
+          "O4": "Unknown"
+        },
+        {
+          "O1": "Unknown",
+          "O2": "Unknown",
+          "O3": "Unknown",
+          "O4": "Satisfied"
+        },
+        {
+          "O1": "Satisfied",
+          "O2": "Unknown",
+          "O3": "Unknown",
+          "O4": "Satisfied"
+        },
+        {
+          "O1": "Satisfied",
+          "O2": "Unknown",
+          "O3": "Unknown",
+          "O4": "Satisfied"
+        },
+        {
+          "O1": "Satisfied",
+          "O2": "Satisfied",
+          "O3": "Unknown",
+          "O4": "Satisfied"
+        },
+        {
+          "O1": "Satisfied",
+          "O2": "Satisfied",
+          "O3": "Unknown",
+          "O4": "Satisfied"
+        },
+        {
+          "O1": "Satisfied",
+          "O2": "Satisfied",
+          "O3": "Satisfied",
+          "O4": "Satisfied"
+        }
+      ],
+      "real_obligations_status": [
+        {
+          "O1": "Unknown",
+          "O2": "Unknown",
+          "O3": "Unknown",
+          "O4": "Unknown"
+        },
+        {
+          "O1": "Unknown",
+          "O2": "Unknown",
+          "O3": "Unknown",
+          "O4": "Unknown"
+        },
+        {
+          "O1": "Unknown",
+          "O2": "Unknown",
+          "O3": "Unknown",
+          "O4": "Satisfied"
+        },
+        {
+          "O1": "Satisfied",
+          "O2": "Unknown",
+          "O3": "Unknown",
+          "O4": "Satisfied"
+        },
+        {
+          "O1": "Satisfied",
+          "O2": "Unknown",
+          "O3": "Unknown",
+          "O4": "Satisfied"
+        },
+        {
+          "O1": "Satisfied",
+          "O2": "Satisfied",
+          "O3": "Unknown",
+          "O4": "Satisfied"
+        },
+        {
+          "O1": "Satisfied",
+          "O2": "Satisfied",
+          "O3": "Unknown",
+          "O4": "Satisfied"
+        },
+        {
+          "O1": "Satisfied",
+          "O2": "Satisfied",
+          "O3": "Satisfied",
+          "O4": "Satisfied"
+        }
+      ],
+      "gating_flag": false,
+      "pass_cache_list": [
+        {
+          "evid_id": 1,
+          "func_name": "line_record_get_field_0",
+          "var_name": null,
+          "pass_params": {
+            "pcode": "Real symbol name: line_record_get_field_0\nbool __cdecl line_record_get_field_0(const line_record_t *lr, const size_t n, const char **pptr, size_t *plen)\n{\n  if ( !n )\n    __assert_fail(\"n!=0\", \"src/text-lines.h\", 0x47u, \"line_record_get_field\");\n  if ( n > line_record_num_fields_0(lr) )\n    return 0;\n  *pptr = lr->fields[n - 1].buf;\n  *plen = lr->fields[n - 1].len;\n  return 1;\n}"
+          },
+          "type": "fetch_pcode"
+        },
+        {
+          "evid_id": 2,
+          "func_name": "line_record_fread",
+          "var_name": null,
+          "pass_params": {
+            "pcode": "Real symbol name: line_record_fread\nbool __cdecl line_record_fread(\n        line_record_t *lr,\n        FILE *stream,\n        char delimiter,\n        bool skip_comments,\n        bool vnlog_prologue)\n{\n  idx_t length; // rdx\n  const char *v7; // rbx\n  bool v8; // al\n  char c; // [rsp+2Bh] [rbp-65h]\n  int leading_comment_count; // [rsp+2Ch] [rbp-64h]\n  const char *pch; // [rsp+38h] [rbp-58h]\n  const char *pch_0; // [rsp+48h] [rbp-48h]\n  size_t s_0; // [rsp+50h] [rbp-40h]\n  size_t s_0a; // [rsp+50h] [rbp-40h]\n  size_t s_0b; // [rsp+50h] [rbp-40h]\n  const char *format; // [rsp+58h] [rbp-38h]\n  linebuffer lbuf; // [rsp+60h] [rbp-30h] BYREF\n  unsigned __int64 v21; // [rsp+78h] [rbp-18h]\n\n  v21 = __readfsqword(0x28u);\n  do\n  {\n    while ( 1 )\n    {\n      if ( !readlinebuffer_delim(&lr->lbuf, stream, delimiter) )\n        return 0;\n      linebuffer_nullify(&lr->lbuf);\n      if ( !vnlog )\n        break;\n      if ( !vnlog_prologue )\n        goto LABEL_11;\n      leading_comment_count = line_leading_comment_count(lr);\n      if ( leading_comment_count <= 1 )\n      {\n        if ( leading_comment_count == 1 )\n        {\n          pch_0 = line_record_buffer(lr);\n          s_0 = strspn(pch_0, \" \\t\");\n          s_0a = strspn(&pch_0[s_0], \"#\") + s_0;\n          s_0b = strspn(&pch_0[s_0a], \" \\t\") + s_0a;\n          length = lr->lbuf.length;\n          lbuf.size = lr->lbuf.size;\n          lbuf.length = length;\n          lbuf.buffer = &lr->lbuf.buffer[s_0b];\n          lbuf.length = length - s_0b;\n          if ( *lbuf.buffer )\n          {\n            line_record_parse_fields(&lbuf, lr, in_tab, 0, 1);\n            return 1;\n          }\n        }\n        else\n        {\n          v7 = line_record_buffer(lr);\n          format = gettext(\"invalid vnlog data: received record before header: '%s'\");\n          error(1, 0, format, v7);\nLABEL_11:\n          pch = line_record_buffer(lr);\n          c = pch[strspn(pch, \" \\t\")];\n          if ( c != 35 && c )\n            goto LABEL_20;\n        }\n      }\n    }\n  }\n  while ( skip_comments && line_record_is_comment(lr) );\nLABEL_20:\n  v8 = vnlog && skip_comments;\n  line_record_parse_fields(&lr->lbuf, lr, in_tab, v8, vnlog);\n  return 1;\n}"
+          },
+          "type": "fetch_pcode"
+        },
+        {
+          "evid_id": 3,
+          "func_name": "remove_dups_in_file",
+          "var_name": "keys_buffer",
+          "pass_params": {
+            "lvar_size": 8,
+            "dist_to_ret": -232,
+            "offset_to_sp": 64,
+            "lvar_type": "char *",
+            "reg_or_stack": "Stack"
+          },
+          "type": "stack_lvar"
+        },
+        {
+          "evid_id": 4,
+          "func_name": null,
+          "var_name": "rmdup_initial_size",
+          "pass_params": {
+            "global_var_type": "size_t",
+            "global_var_size": null,
+            "ref_func_list": [
+              "remove_dups_in_file",
+              "main"
+            ],
+            "addr_ea": "0x32890",
+            "init_value": 1048576
+          },
+          "type": "global_var"
+        },
+        {
+          "evid_id": 5,
+          "func_name": "line_record_parse_fields",
+          "var_name": null,
+          "pass_params": {
+            "pcode": "Real symbol name: line_record_parse_fields\nvoid __cdecl line_record_parse_fields(\n        const linebuffer *lbuf,\n        line_record_t *lr,\n        int field_delim,\n        bool ignore_trailing_comments,\n        bool ignore_trailing_whitespace)\n{\n  size_t num_fields; // [rsp+28h] [rbp-38h]\n  size_t pos; // [rsp+30h] [rbp-30h]\n  const char *fptr; // [rsp+38h] [rbp-28h]\n  size_t flen; // [rsp+40h] [rbp-20h]\n  size_t buflen; // [rsp+48h] [rbp-18h]\n  const char *field_beg_0; // [rsp+50h] [rbp-10h]\n  const char *field_beg; // [rsp+58h] [rbp-8h]\n\n  num_fields = 0;\n  pos = 0;\n  buflen = lbuf->length;\n  fptr = lbuf->buffer;\n  if ( field_delim == 128 )\n  {\n    while ( pos < buflen && (!ignore_trailing_comments || *fptr != 35) )\n    {\n      while ( pos < buflen && (!ignore_trailing_comments || *fptr != 35) && blanks[to_uchar(*fptr)] )\n      {\n        ++fptr;\n        ++pos;\n      }\n      field_beg_0 = fptr;\n      flen = 0;\n      while ( pos < buflen && (!ignore_trailing_comments || *fptr != 35) && !blanks[to_uchar(*fptr)] )\n      {\n        ++fptr;\n        ++pos;\n        ++flen;\n      }\n      if ( !ignore_trailing_whitespace || flen )\n      {\n        line_record_reserve_fields(lr, num_fields);\n        lr->fields[num_fields].buf = field_beg_0;\n        lr->fields[num_fields++].len = flen;\n      }\n    }\n    lr->num_fields = num_fields;\n  }\n  else\n  {\n    while ( buflen && pos <= buflen && (!ignore_trailing_comments || *fptr != 35) )\n    {\n      field_beg = fptr;\n      while ( pos < buflen && (!ignore_trailing_comments || *fptr != 35) && field_delim != *fptr )\n      {\n        ++fptr;\n        ++pos;\n      }\n      line_record_reserve_fields(lr, num_fields);\n      lr->fields[num_fields].buf = field_beg;\n      lr->fields[num_fields++].len = fptr - field_beg;\n      if ( ignore_trailing_comments && *fptr == 35 )\n        pos = buflen;\n      ++pos;\n      ++fptr;\n    }\n    lr->num_fields = num_fields;\n  }\n}"
+          },
+          "type": "fetch_pcode"
+        },
+        {
+          "evid_id": 6,
+          "func_name": "readlinebuffer_delim",
+          "var_name": null,
+          "pass_params": {
+            "pcode": "Real symbol name: readlinebuffer_delim\nlinebuffer *__cdecl readlinebuffer_delim(linebuffer *linebuffer, FILE *stream, char delimiter)\n{\n  char *v4; // rax\n  int c; // [rsp+2Ch] [rbp-24h]\n  char *buffer; // [rsp+30h] [rbp-20h]\n  char *p; // [rsp+38h] [rbp-18h]\n  char *end; // [rsp+40h] [rbp-10h]\n  idx_t oldsize; // [rsp+48h] [rbp-8h]\n\n  buffer = linebuffer->buffer;\n  p = buffer;\n  end = &buffer[linebuffer->size];\n  if ( feof_unlocked(stream) )\n    return 0;\n  while ( 1 )\n  {\n    c = getc_unlocked(stream);\n    if ( c == -1 )\n      break;\nLABEL_9:\n    if ( p == end )\n    {\n      oldsize = linebuffer->size;\n      buffer = (char *)xpalloc(buffer, &linebuffer->size, 1, -1, 1);\n      p = &buffer[oldsize];\n      linebuffer->buffer = buffer;\n      end = &buffer[linebuffer->size];\n    }\n    v4 = p++;\n    *v4 = c;\n    if ( c == delimiter )\n      goto LABEL_12;\n  }\n  if ( p == buffer || ferror_unlocked(stream) )\n    return 0;\n  if ( delimiter != *(p - 1) )\n  {\n    c = delimiter;\n    goto LABEL_9;\n  }\nLABEL_12:\n  linebuffer->length = p - buffer;\n  return linebuffer;\n}"
+          },
+          "type": "fetch_pcode"
+        },
+        {
+          "evid_id": 7,
+          "func_name": "remove_dups_in_file",
+          "var_name": null,
+          "pass_params": {
+            "func_name": [
+              "line_record_init",
+              "hash_initialize",
+              "xmalloc",
+              "x2nrealloc",
+              "line_record_fread",
+              "build_input_line_headers",
+              "group_columns_find_named_columns",
+              "fwrite",
+              "line_record_num_fields_0",
+              "print_field_separator_0",
+              "line_record_get_field_0",
+              "print_line_separator_0",
+              "__assert_fail",
+              "error_not_enough_fields",
+              "memcpy",
+              "hash_insert_if_absent",
+              "gettext",
+              "__errno_location",
+              "error",
+              "line_record_free",
+              "hash_free",
+              "free",
+              "__stack_chk_fail"
+            ],
+            "func_type": [
+              "USER_DEF",
+              "USER_DEF",
+              "USER_DEF",
+              "USER_DEF",
+              "USER_DEF",
+              "USER_DEF",
+              "USER_DEF",
+              "IMPORT_API",
+              "USER_DEF",
+              "USER_DEF",
+              "USER_DEF",
+              "USER_DEF",
+              "IMPORT_API",
+              "USER_DEF",
+              "IMPORT_API",
+              "USER_DEF",
+              "IMPORT_API",
+              "IMPORT_API",
+              "IMPORT_API",
+              "USER_DEF",
+              "USER_DEF",
+              "IMPORT_API",
+              "IMPORT_API"
+            ],
+            "demangle_name": [
+              "line_record_init",
+              "hash_initialize",
+              "xmalloc",
+              "x2nrealloc",
+              "line_record_fread",
+              "build_input_line_headers",
+              "group_columns_find_named_columns",
+              null,
+              "line_record_num_fields_0",
+              "print_field_separator_0",
+              "line_record_get_field_0",
+              "print_line_separator_0",
+              null,
+              "error_not_enough_fields",
+              null,
+              "hash_insert_if_absent",
+              null,
+              null,
+              null,
+              "line_record_free",
+              "hash_free",
+              null,
+              null
+            ]
+          },
+          "type": "inner_call"
+        },
+        {
+          "evid_id": 8,
+          "func_name": "xpalloc",
+          "var_name": null,
+          "pass_params": {
+            "pcode": "Real symbol name: xpalloc\nvoid *__cdecl xpalloc(void *pa, idx_t *pn, idx_t n_incr_min, ptrdiff_t n_max, idx_t s)\n{\n  __int64 v5; // rax\n  void *result; // rax\n  idx_t n; // [rsp+38h] [rbp-28h]\n  idx_t nbytes; // [rsp+40h] [rbp-20h]\n  __int64 n0; // [rsp+48h] [rbp-18h]\n\n  n0 = *pn;\n  n = (n0 >> 1) + n0;\n  if ( __OFADD__(n0 >> 1, n0) )\n    n = 0x7FFFFFFFFFFFFFFFLL;\n  if ( n_max >= 0 && n_max < n )\n    n = n_max;\n  nbytes = s * n;\n  if ( is_mul_ok(s, n) )\n  {\n    if ( nbytes > 127 )\n      v5 = 0;\n    else\n      v5 = 128;\n  }\n  else\n  {\n    v5 = 0x7FFFFFFFFFFFFFFFLL;\n  }\n  if ( v5 )\n  {\n    n = v5 / s;\n    nbytes = v5 - v5 % s;\n  }\n  if ( !pa )\n    *pn = 0;\n  if ( n_incr_min > n - n0 )\n  {\n    if ( (n = n0 + n_incr_min, __OFADD__(n0, n_incr_min))\n      || n_max >= 0 && n_max < n\n      || (nbytes = s * n, !is_mul_ok(s, n)) )\n    {\n      xalloc_die();\n    }\n  }\n  result = xrealloc(pa, nbytes);\n  *pn = n;\n  return result;\n}"
+          },
+          "type": "fetch_pcode"
+        }
+      ]
+    }
+  ]
+}

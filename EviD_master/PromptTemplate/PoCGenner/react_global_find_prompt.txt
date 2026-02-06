@@ -1,0 +1,11 @@
+[VARIABLE TYPE]
+$map{{global_var_type}}
+
+[VARIABLE SIZE]
+$map{{global_var_size}}
+
+[REFERENCE FUNCTION]
+$map{{ref_func}}
+
+[ADDRESS]
+$map{{ea}}
